@@ -11,14 +11,16 @@ import (
 
 // CTL is a client controller
 type CTL struct {
-	client   interface{}
-	registry map[string]reflect.Type
+	Registry map[string]reflect.Type
+
+	client interface{}
 }
 
 // New instantiates a new controller
 func New(client interface{}) (CTL, error) {
 	r := make(map[string]reflect.Type)
 
+	// generate type dictionary based on arguments of given client's methods
 	cType := reflect.TypeOf(client)
 	for i := 0; i < cType.NumMethod(); i++ {
 		t := cType.Method(i).Type
@@ -28,16 +30,14 @@ func New(client interface{}) (CTL, error) {
 		}
 	}
 
-	fmt.Printf("registered: %v\n", r)
-
 	return CTL{
+		Registry: r,
 		client:   client,
-		registry: r,
 	}, nil
 }
 
 // Exec takes command line args and maps them to a client call
-func (c *CTL) Exec(args []string, out io.Writer) (interface{}, error) {
+func (c *CTL) Exec(ctx context.Context, args []string, out io.Writer) (interface{}, error) {
 	if args == nil || len(args) < 1 {
 		return nil, errors.New("insufficient arguments provided")
 	}
@@ -45,10 +45,13 @@ func (c *CTL) Exec(args []string, out io.Writer) (interface{}, error) {
 	fn := reflect.ValueOf(c.client).MethodByName(args[0])
 	fmt.Fprintf(out, "function %s found\n", args[0])
 
+	// go-grpc interfaces should have 2 arguments
 	in := make([]reflect.Value, 2)
-	in[0] = reflect.ValueOf(context.Background())
 
-	// construct input
+	// first argument is context
+	in[0] = reflect.ValueOf(ctx)
+
+	// second argument is a struct
 	fnType, _ := reflect.TypeOf(c.client).MethodByName(args[0])
 	argType := fnType.Type.In(2).Elem()
 	arg := c.instantiate(argType.PkgPath() + "." + argType.Name())
@@ -60,8 +63,10 @@ func (c *CTL) Exec(args []string, out io.Writer) (interface{}, error) {
 	}
 	in[1] = reflect.ValueOf(arg)
 
-	fmt.Fprintf(out, "generated argument: \n{ %v}\n", arg)
+	// output generated call
+	fmt.Fprintf(out, "generated function call: \n%s(ctx, { %v})\n", args[0], arg)
 
+	// execute and get results of call: [interface{}, error]
 	result := fn.Call(in)
 
 	return result[0].Interface(), result[1].Interface().(error)
@@ -96,28 +101,7 @@ func (c *CTL) Help(out io.Writer) {
 }
 
 func (c *CTL) instantiate(t string) interface{} {
-	fmt.Printf("%s: %v\n", t, c.registry[t])
-	v := reflect.New(c.registry[t]).Elem()
+	v := reflect.New(c.Registry[t]).Elem()
 	// Maybe fill in fields here if necessary
 	return v.Addr().Interface()
-}
-
-func setProperty(name string, value string, obj interface{}) bool {
-	val := reflect.ValueOf(obj)
-
-	if val.Kind() != reflect.Ptr {
-		return false
-	}
-	structVal := val.Elem()
-	for i := 0; i < structVal.NumField(); i++ {
-		valueField := structVal.Field(i)
-		typeField := structVal.Type().Field(i)
-		if strings.ToLower(typeField.Name) == strings.ToLower(name) {
-			if valueField.IsValid() && valueField.CanSet() && valueField.Kind() == reflect.String {
-				valueField.SetString(value)
-				return true
-			}
-		}
-	}
-	return false
 }
